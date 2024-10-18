@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 
-#-------------------------------------------------------#
-#   Raspberry Pi - Base NAS Script v1.0                 #
+#-------------- Base NAS Script v1.0 beta --------------#
+#                                                       #
 #   Created by: Marus Alexander (Romania/Europe)        #
 #   Contact and bug report: marus.gradinaru@gmail.com   #
 #   Website link: http://marus-gradinaru.42web.io       #
 #   Donation link: https://revolut.me/marusgradinaru    #
 #                                                       #
 #-------------------------------------------------------#
+
+# Note: 
+#  Currently, the power button has been disabled. After I built the first prototype, I discovered that the power button
+#  was not working properly, because of a design flaw. So, I redesigned it, as you can see in the schematics, and now
+#  I'm in the process of testing the second version. Please check the website later for the fully functional code.
 
 
 # ======================== USER INPUT PARAMETERS ===============================
@@ -88,17 +93,26 @@ def CheckInstImp(item):
   if isinstance(item, list): 
     item_name = item[0]
     min_ver = item[1]
+    cmd_purge = ['apt', 'purge', '-y'] + item[2:]
   else:
     item_name = item
     min_ver = ''
+    cmd_purge = []
   if item_name.startswith('python3-'): item_name = item_name[8:]  
   try: item_obj = importlib.import_module(item_name)
   except: return False 
   if min_ver != '':
     item_ver = item_obj.__version__
     if not MinVersion(item_ver, min_ver):
-      print(YELLOW+f'Error: Module "{item_name}" version is {item_ver}. Expected {min_ver}+ !'+RESET)
-      sys.exit(1)
+      if len(cmd_purge) > 3:
+        result = subprocess.run(cmd_purge, capture_output=True, text=True)
+        if result.returncode == 0: return False
+        else:
+          print(YELLOW+f'Error: Cannot remove old version ({item_ver}) of "{item_name}".'+RESET)
+          sys.exit(1)
+      else:
+        print(YELLOW+f'Error: Module "{item_name}" version is {item_ver}. Expected {min_ver}+ !'+RESET)
+        sys.exit(1)
   return True
 
 def CheckInstDpkg(item):
@@ -121,8 +135,9 @@ if InstDepend and Debug:
   try:
     SysDeps = [
       [ CheckInstDpkg, ['apt',  'install', '-y'], ['python3-pip', 'samba', 'samba-common-bin', 'smbclient', 'hdparm', 'smartmontools'] ],
-      [ CheckInstImp,  ['apt',  'install', '-y'], ['python3-psutil', 'python3-netifaces', 'python3-pyudev'] ],  # python3-smbus ?
-      [ CheckInstImp,  ['pip3', 'install', '--break-system-packages'], [['gpiod', '2']] ] ]
+      [ CheckInstImp,  ['apt',  'install', '-y'], ['python3-psutil', 'python3-netifaces', 'python3-pyudev', 'python3-dbus'] ], 
+      [ CheckInstImp,  ['pip3', 'install', '--break-system-packages'], [['gpiod',    '2',     'gpiod', 'libgpiod2', 'python3-libgpiod'] ] ] 
+    ]                                                                  # to install, min.ver, to remove...    
     print('Checking dependencies...')
     for dlist in SysDeps:
       CheckInstalled = dlist[0];
@@ -158,7 +173,8 @@ from datetime import timedelta
 
 # --- External Modules ----------
 
-import gpiod, psutil, netifaces, pyudev, smbus 
+import gpiod, psutil, netifaces, pyudev
+from smbus2 import SMBus 
 from gpiod.line import Edge, Bias, Direction
 
 LogD(2, 'Modules imported')
@@ -346,6 +362,9 @@ PowerFailureMsg = 'Warning: power failure detected !'
 # ----- Default Settings -------------------
 
 DefaultSettings = """
+[General]
+FirstSysRun = true
+
 [Network]
 CompIP = none
 CompPort = 0
@@ -875,7 +894,7 @@ def ShutdownType():
 def SignalToCutThePower():
   try:
     SDType, RSecs = ShutdownType()
-    I2CBus = smbus.SMBus(1)
+    I2CBus = SMBus(1)
     try:
       if SDType == 'SD-NAS':
         I2CBus.write_i2c_block_data(PicoAddr, regShdState, [1])
@@ -924,7 +943,10 @@ def ClearSafeShd():
   except: pass
 
 def WasSafeShd():
-  return os.path.exists(SafeShdFile)
+  with cfgLock:
+    try: FirstRun = Config['General'].getboolean('FirstSysRun')
+    except: FirstRun = True 
+  return FirstRun or os.path.exists(SafeShdFile)
 
 def PowerFailureMsgHandler():
   global Sshd_Ack
@@ -1166,7 +1188,7 @@ def SetupSambaNas():
       with cfgLock:
         Config['Samba']['User'] = the_user
         Config['Samba']['Pass'] = the_pass
-        SaveConfigNow()
+        SaveConfigNow(True)
     return ''
   except Exception as E:
     return f'Unexpected error while setting up Samba:\n{E}' 
@@ -1772,14 +1794,15 @@ def SaveConfig():
     SaveCfgTimer = threading.Timer(600, SaveConfigNow);
     SaveCfgTimer.start()
 
-def SaveConfigNow():
+def SaveConfigNow(forced=False):
   global SaveCfgTimer
   try:
     with cfgLock:
-      if SaveCfgTimer != None:
+      if forced or (SaveCfgTimer != None):
         with open(CustomSettingsFile, 'w') as cs: Config.write(cs)
-        SaveCfgTimer.cancel()
-        SaveCfgTimer = None
+        if SaveCfgTimer != None:
+          SaveCfgTimer.cancel()
+          SaveCfgTimer = None
   except Exception as E:
     if Debug: print(f' SaveConfigNow error: {E}')
 
@@ -3750,7 +3773,7 @@ if not all(value == 0x01 for value in IStat):
   if Debug: 
     print(CYAN+'Install Status: '+RED+'Not complete')
     print(YELLOW+'Please run the script again with "-install" parameter.')
-    print('You cand add options with ":" and "samba,paths,hwfeat,smbuser=<user>,smbpass=<pass>".'+RESET)
+    print('You can add options with ":" and "samba,paths,hwfeat,smbuser=<user>,smbpass=<pass>".'+RESET)
     print('')
     ShowStatus(IStat)
   LogD(11, 'App not properly installed. Exiting...')
@@ -3781,6 +3804,13 @@ try:
   LogD(14, 'Entering the main "try" block')
   if Debug: print(f'Run Path: {RunPath}')
 
+  # Clearing the FirstRun flag...
+  if not Debug:
+    with cfgLock:
+      if Config['General'].getboolean('FirstSysRun'):
+        Config['General']['FirstSysRun'] = 'false'
+        SaveConfig()
+
   # Setting RealTime priority to the Main Thread and all its created sub-threads...
 
   MainPID = threading.get_native_id()
@@ -3789,7 +3819,7 @@ try:
 
   # Init I2C Master bus...
 
-  I2CBus = smbus.SMBus(1)
+  I2CBus = SMBus(1)
 
   # Thermal settings...
 
@@ -3899,5 +3929,4 @@ elif ExitCmd == exShutdownUPS:
 elif ExitCmd == exShutdownALL:
   ALLMarkSD()
   os.system('sudo poweroff -p')
-
 
