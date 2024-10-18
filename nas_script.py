@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 #-------------------------------------------------------#
-#                                                       #
+#   Raspberry Pi - Base NAS Script v1.0                 #
 #   Created by: Marus Alexander (Romania/Europe)        #
 #   Contact and bug report: marus.gradinaru@gmail.com   #
 #   Website link: http://marus-gradinaru.42web.io       #
@@ -386,17 +386,17 @@ BatSafe.push = yes
 BatSafe.log = no
 BatLost.comp = yes
 BatLost.push = yes
-BatLost.log = no
+BatLost.log = yes
 BatAvail.comp = yes
 BatAvail.push = yes
-BatAvail.log = no
+BatAvail.log = yes
 BatOvr1.comp = yes
 BatOvr1.push = yes
 BatOvr1.log = yes
 BatOvr0.comp = yes
 BatOvr0.push = yes
 BatOvr0.log = yes
-UseIdle = no
+UseIdle = yes
 IdleVal = 10
 
 [Standby]
@@ -423,7 +423,7 @@ NasHighDuty = 100
 NasFixDuty = 50
 UpsFAuto = yes
 UpsLowTemp = 3300
-UpsHighTemp = 3500
+UpsHighTemp = 3600
 UpsLowDuty = 20
 UpsHighDuty = 100
 UpsFixDuty = 50
@@ -434,7 +434,7 @@ StartHour = 22
 StartMin = 30
 StopHour = 8
 StopMin = 0
-MaxFDuty = 40
+MaxFDuty = 35
 
 [Samba]
 User = none
@@ -1548,6 +1548,15 @@ def ValidForServer(host, port):
       return True
     except:
       return False
+
+def GetServerAddr():
+  AdpList = GetAdapterList()
+  if len(AdpList) == 0: return 'This system has no network adapter'
+  SrvAddr = ValidRaspiAddr()
+  if SrvAddr == None: return 'Invalid server address'
+  if (SrvAddr[0] == 'none') or (not any(adp[1] == SrvAddr[0] for adp in AdpList)):  
+    SrvAddr = (AdpList[0][1], SrvAddr[1])
+  return f'Server addres is: {SrvAddr[0]}:{SrvAddr[1]}'
 
 
 #----- Temperature & Fan --------------------------------
@@ -3654,7 +3663,7 @@ AMPModified  = False
 
 LogD(8, 'Message pools loaded')
 
-# Handling Restart/Shutdown requests...
+# Handling Restart/Shutdown/ServerAddr requests...
 
 for param in ParamList:
   if param == '-shutdown':
@@ -3672,6 +3681,9 @@ for param in ParamList:
     SendBuff(CMD_THEEND, b'', False, False)
     time.sleep(0.05)
     sys.exit(0)
+  elif param == '-srvaddr':
+    print(GetServerAddr())
+    sys.exit(0)  
 
 # Allow only one instace...
 
@@ -3887,4 +3899,5 @@ elif ExitCmd == exShutdownUPS:
 elif ExitCmd == exShutdownALL:
   ALLMarkSD()
   os.system('sudo poweroff -p')
+
 
