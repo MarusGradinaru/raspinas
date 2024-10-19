@@ -65,7 +65,7 @@ def LogD(level, msg):
       appLog.write(f'{TimeStamp}  [ Level: {level} ] - {msg}\n')
   except: pass    
 
-LogD(0, 'App started')
+LogD(0, 'App started'+'-'*40)
 
 ParamList = sys.argv[1:] 
 Debug = False if any(param == '-sys' for param in ParamList) else True
@@ -1281,6 +1281,7 @@ def InstallScript(do_samba, do_paths, do_hwfeat):
     ErrMsg = SetupSambaNas()
     if ErrMsg != '': print(ErrMsg+'\n')
   if do_paths:
+    if not os.path.exists(CrontabCfgFile): open(CrontabCfgFile, 'a').close()
     ErrMsg = ChangeFileLines(CrontabCfgFile, CrontabCfg, CrontabDel)
     if ErrMsg != '': print('Cannot configure script to run at boot:\n'+ErrMsg+'\n')
     ErrMsg = ExtendService('reboot', RebootCfg)
@@ -1782,7 +1783,9 @@ def SaveAndroMsgPool():
       if AMPModified:
         with open(AMPFile, 'wb') as ampFile:
           ampFile.write(AndroMsgPool)
-        AMPModified = False 
+          ampFile.flush()
+          os.fsync(ampFile.fileno())
+        AMPModified = False
   except: pass
 
 # --- Configuration --------------------------
@@ -3600,7 +3603,6 @@ Config.optionxform = str
 Config.read_string(DefaultSettings)
 Config.read(CustomSettingsFile)
 CheckPeriod = Config['Standby'].getint('CheckPeriod')
-
 LogD(6, 'Settings loaded')
 
 # Init global variables and objects...
@@ -3677,13 +3679,13 @@ MountPoints  = ()
 LogD(7, 'Global variables inited')
 
 # Loading Msg Pools...
+
 try:
   with open(AMPFile, 'rb') as ampFile:
     AndroMsgPool = ampFile.read()      # holds the messages sent to Android until the Android app gets them
 except:
   AndroMsgPool = b''    
 AMPModified  = False
-
 LogD(8, 'Message pools loaded')
 
 # Handling Restart/Shutdown/ServerAddr requests...
@@ -3694,7 +3696,7 @@ for param in ParamList:
     BroadcastMsg(ShutdownMsg, 3)
     SaveAndroMsgPool()
     SendBuff(CMD_THEEND, b'', False, False)
-    time.sleep(0.05)
+    time.sleep(0.5)
     SignalToCutThePower()
     sys.exit(0)
   elif param == '-reboot':
@@ -3702,7 +3704,7 @@ for param in ParamList:
     BroadcastMsg(RebootMsg, 2)
     SaveAndroMsgPool()
     SendBuff(CMD_THEEND, b'', False, False)
-    time.sleep(0.05)
+    time.sleep(0.5)
     sys.exit(0)
   elif param == '-srvaddr':
     print(GetServerAddr())
@@ -3711,9 +3713,8 @@ for param in ParamList:
 # Allow only one instace...
 
 if AlreadyRunning():
-  if Debug: print('Script is already running...')
+  if Debug: print('Script is already running...\nUse "sudo htop" and F9 on the main thread to stop it.')
   sys.exit(1)
-
 LogD(9, 'One instance allowed')  
 
 # Handling Install/Remove requests...
@@ -3762,13 +3763,12 @@ for param in ParamList:
     StartInStandby = False
   elif param == '-disk:off':
     StartInStandby = True
-
 LogD(10, 'Standby flag handled')
 
 # Check if the script is installed...
 
 IStat = GetInstStatus(False)
-LogD(0, f"Install Status = {''.join('0' if b == 0 else '1' for b in IStat)}")
+LogD(11, f"Install Status = {''.join('0' if b == 0 else '1' for b in IStat)}")
 if not all(value == 0x01 for value in IStat):
   if Debug: 
     print(CYAN+'Install Status: '+RED+'Not complete')
@@ -3778,7 +3778,6 @@ if not all(value == 0x01 for value in IStat):
     ShowStatus(IStat)
   LogD(11, 'App not properly installed. Exiting...')
   sys.exit(2)
-
 LogD(11, 'Install check done')  
 
 # Check Safe Shutdown flag
@@ -3786,7 +3785,6 @@ LogD(11, 'Install check done')
 if not Debug:
   Sshd_Ack = WasSafeShd()
   if Sshd_Ack: ClearSafeShd()
-
 LogD(12, 'Safe shutdown flag inited')  
 
 # Register signal handlers...
@@ -3797,7 +3795,6 @@ def ExitRequest(signum, frame):
 
 signal.signal(signal.SIGTERM, ExitRequest)
 signal.signal(signal.SIGINT, ExitRequest)
-
 LogD(13, 'Signal handlers registered')
 
 try:
@@ -3805,21 +3802,25 @@ try:
   if Debug: print(f'Run Path: {RunPath}')
 
   # Clearing the FirstRun flag...
+
   if not Debug:
     with cfgLock:
       if Config['General'].getboolean('FirstSysRun'):
         Config['General']['FirstSysRun'] = 'false'
         SaveConfig()
+  LogD(15, 'FirstRun flag cleared')
 
   # Setting RealTime priority to the Main Thread and all its created sub-threads...
 
   MainPID = threading.get_native_id()
   priority = os.sched_get_priority_max(os.SCHED_FIFO)   # 1 (min) ... 99 (max)
   os.sched_setscheduler(MainPID, os.SCHED_FIFO, os.sched_param(priority))
+  LogD(16, 'Priority set')
 
   # Init I2C Master bus...
 
   I2CBus = SMBus(1)
+  LogD(17, 'I2C bus inited')
 
   # Thermal settings...
 
@@ -3829,9 +3830,12 @@ try:
   IntTemp = TMP275(I2CBus, IntAddr, 12)
   HddTemp = TMP275(I2CBus, HddAddr, 12)
   ExtTemp = TMP275(I2CBus, ExtAddr, 12)
+  LogD(18, 'Thermal configured')
 
   # Silent Mode settings...
+
   ReadSilentParams()
+  LogD(19, 'Silen Mode params read')
 
   # Try init UPS Power state registers...
 
@@ -3847,6 +3851,7 @@ try:
     REG_Battery = bytes(SBuff[8:12])
     REG_BatOver = bytes(SBuff[12:])
   except: pass
+  LogD(20, 'UPS regs inited')
 
   # Setting up GPIO ports and starting GPIO Monitor thread...
 
@@ -3861,12 +3866,14 @@ try:
     RpmPin:    CountImpulses,
     UAlertPin: UPSAlert }
   GpioMon = GpioMonitor('NAS-GpioMonitor', GpioConfig, GpioCallbacks)
+  LogD(21, 'GPIO inited')
 
   # Main thread Async Loop...
 
   ResetRPM()
   TaskList = []
   AllTasksDone = asyncio.Event()
+  LogD(22, 'Entering main loop')
   asyncio.run(main())
 
 except Exception as E:
@@ -3929,4 +3936,5 @@ elif ExitCmd == exShutdownUPS:
 elif ExitCmd == exShutdownALL:
   ALLMarkSD()
   os.system('sudo poweroff -p')
+
 
