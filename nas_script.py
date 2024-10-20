@@ -68,8 +68,8 @@ def LogD(level, msg):
 LogD(0, 'App started'+'-'*40)
 
 ParamList = sys.argv[1:] 
-Debug = False if any(param == '-sys' for param in ParamList) else True
-InstDepend = True if any(param.startswith('-install') for param in ParamList) else False
+Debug = not any(param == '-sys' for param in ParamList)
+InstDeps = Debug and any(param.startswith('-install') for param in ParamList) and not any(param == '-nodeps' for param in ParamList)
 
 if os.geteuid() != 0:
   if Debug: print("This script must be run as root. Please try again with 'sudo'.")
@@ -105,13 +105,22 @@ def CheckInstImp(item):
     item_ver = item_obj.__version__
     if not MinVersion(item_ver, min_ver):
       if len(cmd_purge) > 3:
-        result = subprocess.run(cmd_purge, capture_output=True, text=True)
-        if result.returncode == 0: return False
+        print(f' - Removing old version of: {item_name} (v{item_ver}) ... ', end='', flush=True)
+        try:
+          result = subprocess.run(cmd_purge, capture_output=True, text=True)
+        except:
+          print(RED+'Failed !'+RESET)
+          raise
+        if result.returncode == 0:
+          print(GREEN+'Done.'+RESET)
+          time.sleep(0.6) 
+          return False
         else:
-          print(YELLOW+f'Error: Cannot remove old version ({item_ver}) of "{item_name}".'+RESET)
+          print(RED+'Failed !'+RESET) 
+          print(YELLOW+f'   {result.stderr}'+RESET)
           sys.exit(1)
       else:
-        print(YELLOW+f'Error: Module "{item_name}" version is {item_ver}. Expected {min_ver}+ !'+RESET)
+        print(YELLOW+f'Internal error: Invalid uninstall command.'+RESET)
         sys.exit(1)
   return True
 
@@ -130,14 +139,14 @@ def CheckInstDpkg(item):
       if (len(words) == 2) and (words[0] == 'ii') and (words[1] == item_name): return True
   return False 
 
-if InstDepend and Debug:
-  Installing = False
+if InstDeps:
   try:
     SysDeps = [
       [ CheckInstDpkg, ['apt',  'install', '-y'], ['python3-pip', 'samba', 'samba-common-bin', 'smbclient', 'hdparm', 'smartmontools'] ],
       [ CheckInstImp,  ['apt',  'install', '-y'], ['python3-psutil', 'python3-netifaces', 'python3-pyudev', 'python3-dbus'] ], 
-      [ CheckInstImp,  ['pip3', 'install', '--break-system-packages'], [['gpiod',    '2',     'gpiod', 'libgpiod2', 'python3-libgpiod'] ] ] 
-    ]                                                                  # to install, min.ver, to remove...    
+      [ CheckInstImp,  ['pip3', 'install', '--break-system-packages'], [
+          ['gpiod',    '2',     'gpiod', 'libgpiod2', 'python3-libgpiod'] ] ]
+    ]     # to install, min.ver, to remove...    
     print('Checking dependencies...')
     for dlist in SysDeps:
       CheckInstalled = dlist[0];
@@ -145,19 +154,23 @@ if InstDepend and Debug:
         item_name = item[0] if isinstance(item, list) else item
         command = dlist[1] + [item_name]
         if not CheckInstalled(item):
-          print(f'Installing required dependence: {item_name} ... ', end='', flush=True)
-          Installing = True
-          result = subprocess.run(command, capture_output=True, text=True)
+          print(f' - Installing required dependence: {item_name} ... ', end='', flush=True)
+          try:
+            result = subprocess.run(command, capture_output=True, text=True)
+          except:
+            print(RED+'Failed !'+RESET)
+            raise  
           if result.returncode == 0: 
-            print(GREEN+'Done.'+RESET); Installing = False
+            print(GREEN+'Done.'+RESET)
             time.sleep(0.6)
           else:
-            print(RED+'Failed !'+RESET); Installing = False
-            print(YELLOW+f'Error: {result.stderr}'+RESET)
+            print(RED+'Failed !'+RESET)
+            print(YELLOW+f'   {result.stderr}'+RESET)
             sys.exit(1)
-    print('All dependencies are installed.')        
+    print('All dependencies are installed.\n')
+    # Restart the script in normal mode (bypassing the depenenciess installation)
+    os.execv('/usr/bin/sudo', ['sudo', sys.executable] + sys.argv + ['-nodeps'])
   except Exception as E:
-    if Installing: print(RED+'Failed !'+RESET)
     print(YELLOW+f'Exception: {E}'+RESET)
     sys.exit(1)
 
@@ -184,20 +197,24 @@ LogD(2, 'Modules imported')
 # ----- Install Config ------------------
 
 SambaCfgFile   = '/etc/samba/smb.conf'
-CrontabCfgFile = '/var/spool/cron/crontabs/root'
+ServiceCfgFile = '/etc/systemd/system/nas_script.service'
 RebootCfgFile  = '/etc/systemd/system/systemd-reboot.service.d/99-nas-script-reboot.conf'
 PwrOffCfgFile  = '/etc/systemd/system/systemd-poweroff.service.d/99-nas-script-poweroff.conf'
 FirmwareFile   = '/boot/firmware/config.txt'
 
 SambaNasCfg    = [f'path = {NasRoot}', 'writeable = yes', 'inherit permissions = yes', 'public = no']
-CrontabCfg     = ['@reboot python3 %RunPath%/nas_script.py -sys >/dev/null 2>&1 &']
 RebootCfg      = ['ExecStartPre=python3 %RunPath%/nas_script.py -sys -reboot']
 PwrOffCfg      = ['ExecStartPre=python3 %RunPath%/nas_script.py -sys -shutdown']
 FirmwarePwmCfg = ['dtoverlay=pwm,pin=18,func=2']
 FirmwareLedCfg = ['dtoverlay=act-led,gpio=19']
 FirmwareCfg    = [FirmwarePwmCfg[0], FirmwareLedCfg[0]]
+ServiceCfg = [
+  ['Unit', 'Description=NAS Script', 'After=network.target'],
+  ['Service', 'ExecStart=/usr/bin/python3 %RunPath%/nas_script.py -sys', 'WorkingDirectory=%RunPath%', 'StandardOutput=null',
+    'StandardError=null', 'Restart=no', 'User=root'],
+  ['Install', 'WantedBy=multi-user.target']
+]
 
-CrontabDel     = ['nas_script.py']
 FirmwareDel    = ['dtoverlay=pwm', 'dtoverlay=act-led']
 
 RebootSec      = 'Service'
@@ -1063,6 +1080,22 @@ def CheckForLines(filename, to_check, section=''):
     return True  
   except: return False
 
+# Input: chklst = [ ['section1', 'line1', 'line2', ...], ... ]
+#  - section name can be empty for the whole file
+def CheckForLinesEx(filename, chklst):  
+  try:
+    with open(filename, 'r') as file: Lines = file.readlines()
+    for item in chklst:
+      section = item[0]; to_check = item[1:]
+      SS, SE = GetSection(Lines, section)
+      if SS < 0: return False
+      for line in to_check:
+        for I in range(SS, SE):
+          if Lines[I].strip() == line: break
+        else: return False
+    return True  
+  except: return False
+
 def ChangeFileLines(filename, to_add, to_clean, section=''):
   try:
     with open(filename, 'r') as file: Lines = file.readlines()
@@ -1133,6 +1166,7 @@ def RemoveExtension(serv):
   except Exception as E:
     return f'{E}' 
 
+
 def SetupSambaNas():
   try:
     the_user = IRNewUser; the_pass = IRNewPass
@@ -1143,46 +1177,46 @@ def SetupSambaNas():
 
     # Stop Samba services
     result = subprocess.run(['systemctl', 'stop', 'smbd', 'nmbd'], capture_output=True, text=True)
-    if result.returncode != 0: return 'Cannot stop Samba services:\n'+result.stderr     
+    if result.returncode != 0: return f'Stop Samba: {result.stderr}'     
 
     # Create NAS group and add the user in it
     result = subprocess.run(['groupadd', NasGroup], capture_output=True, text=True)
     if (result.returncode != 0) and (not 'already exists' in result.stderr): 
-      return 'Cannot create NAS permission group:\n'+result.stderr
+      return f'Create Group: {result.stderr}'
     result = subprocess.run(['gpasswd', '-a', the_user, NasGroup], capture_output=True, text=True)
-    if (result.returncode != 0): return 'Cannot add user to NAS group:\n'+result.stderr
+    if (result.returncode != 0): return f'Add User: {result.stderr}'
     
     # Create the NAS root if needed, and setup permissions and ownership 
     ErrMsg = NasSysDir(NasRoot)
-    if ErrMsg != '': return 'Cannot setup the NAS root folder:\n'+ErrMsg
+    if ErrMsg != '': return f'Create Root: {ErrMsg}'
 
     # Configure Samba NAS
     ErrMsg = ChangeFileLines(SambaCfgFile, SambaNasCfg, 'all', NasName)
-    if ErrMsg != '': return 'Cannot edit Samba configuration file:\n'+ErrMsg
+    if ErrMsg != '': return f'Config Samba: {ErrMsg}'
 
     # Setup user and password for Samba NAS access
     result = subprocess.run(['smbpasswd', '-x', the_user], capture_output=True, text=True)
     if (result.returncode != 0) and (not 'Failed to find' in result.stderr): 
-      return 'Cannot remove the old Samba user:\n'+result.stderr
+      return f'Remove User: {result.stderr}'
     command = ['smbpasswd', '-a', the_user]
     process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     process.communicate(input=(f'{the_pass}\n{the_pass}\n').encode())
-    if process.returncode != 0: return 'Cannot configure the new Samba user:\n'+result.stderr
+    if process.returncode != 0: return f'Add User: {result.stderr}'
 
     # Enable Samba services 
     result = subprocess.run(['systemctl', 'is-enabled', 'smbd', 'nmbd'], capture_output=True, text=True)
     state = result.stdout.strip().split('\n')
-    if len(state) != 2: return 'Cannot get Samba status:\n'+result.stderr
+    if len(state) != 2: return f'Samba Status: {result.stderr}'
     command = ['systemctl', 'enable']
     if state[0] != 'enabled': command.append('smbd')
     if state[1] != 'enabled': command.append('nmbd')
     if len(command) > 2:
       result = subprocess.run(command, capture_output=True, text=True)
-      if result.returncode != 0: return 'Cannot enable Samba services:\n'+result.stderr
+      if result.returncode != 0: return f'Enable Samba: {result.stderr}'
 
     # Start Samba services
     result = subprocess.run(['systemctl', 'start', 'smbd', 'nmbd'], capture_output=True, text=True)
-    if result.returncode != 0: return 'Cannot start Samba services:\n'+result.stderr
+    if result.returncode != 0: return f'Start Samba: {result.stderr}'
 
     if SaveCred:
       with cfgLock:
@@ -1191,28 +1225,28 @@ def SetupSambaNas():
         SaveConfigNow(True)
     return ''
   except Exception as E:
-    return f'Unexpected error while setting up Samba:\n{E}' 
+    return f'Unexpected: {E}' 
 
 def RemoveSambaNas():
   try:
     # Stop Samba services (but not disable it)
     result = subprocess.run(['systemctl', 'stop', 'smbd', 'nmbd'], capture_output=True, text=True)
-    if result.returncode != 0: return 'Cannot stop Samba services:\n'+result.stderr     
+    if result.returncode != 0: return f'Stop Samba: {result.stderr}'     
 
     # Remove user and password for Samba NAS database
     with cfgLock: the_user = Config['Samba']['User']
     if the_user != '':
       result = subprocess.run(['smbpasswd', '-x', the_user], capture_output=True, text=True)
       if (result.returncode != 0) and (not 'Failed to find' in result.stderr):
-        return 'Cannot remove user credentials from Samba database:\n'+result.stderr
+        return f'Remove Creds: {result.stderr}'
 
     # Remove Samba NAS configuration
     ErrMsg = RemoveSection(SambaCfgFile, NasName)
-    if ErrMsg != '': return 'Cannot edit Samba configuration file:\n'+ErrMsg
+    if ErrMsg != '': return f'Remove Conf: {ErrMsg}'
 
     return ''
   except Exception as E:
-    return f'Unexpected error while removing Samba installation:\n{E}' 
+    return f'Unexpected: {E}' 
 
 def IsSambaNasReady(CheckAkt=True):
   try:
@@ -1256,9 +1290,49 @@ def IsSambaNasReady(CheckAkt=True):
     return True
   except: return False
 
+
+def SetupNasService():
+  try:
+    with open(ServiceCfgFile, 'w') as servFile:
+      for sect in ServiceCfg:
+        for idx, line in enumerate(sect):
+          if idx == 0: servFile.write(f'[{line}]\n')
+          else: servFile.write(line+'\n')
+        servFile.write('\n')   
+    result = subprocess.run(['systemctl', 'daemon-reload'], capture_output=True, text=True)
+    if result.returncode != 0: return f'Daemon Reload: {result.stderr}'
+    result = subprocess.run(['systemctl', 'enable', 'nas_script.service'], capture_output=True, text=True)
+    if result.returncode != 0: return f'Enable Service: {result.stderr}'
+    subprocess.run(['systemctl', 'stop', 'smartd'], capture_output=True, text=True)
+    subprocess.run(['systemctl', 'disable', 'smartd'], capture_output=True, text=True)
+    return ''
+  except Exception as E:
+    return f'{E}' 
+
+def RemoveNasService():
+  try:
+    result = subprocess.run(['systemctl', 'disable', 'nas_script.service'], capture_output=True, text=True)
+    if result.returncode != 0: return f'Disable Service: {result.stderr}'
+    if os.path.exists(ServiceCfgFile): os.remove(ServiceCfgFile)
+    result = subprocess.run(['systemctl', 'daemon-reload'], capture_output=True, text=True)
+    if result.returncode != 0: return f'Daemon Reload: {result.stderr}'
+    subprocess.run(['systemctl', 'enable', 'smartd'], capture_output=True, text=True)
+    subprocess.run(['systemctl', 'start', 'smartd'], capture_output=True, text=True)
+    return ''
+  except Exception as E:
+    return f'{E}' 
+
+def IsNasServReady():
+  try:
+    if not CheckForLinesEx(ServiceCfgFile, ServiceCfg): return False
+    result = subprocess.run(['systemctl', 'is-enabled', 'nas_script.service'], capture_output=True, text=True)
+    return result.stdout.strip() == 'enabled'
+  except: return False  
+
+
 def GetInstStatus(CheckSmbAkt=True):
   SambaNas      = IsSambaNasReady(CheckSmbAkt)
-  RunAtBoot     = CheckForLines(CrontabCfgFile, CrontabCfg)
+  RunAtBoot     = IsNasServReady()
   RunAtRestart  = CheckForLines(RebootCfgFile, RebootCfg, RebootSec)
   RunAtShutdown = CheckForLines(PwrOffCfgFile, PwrOffCfg, PwrOffSec)
   PWMEnabled    = CheckForLines(FirmwareFile, FirmwarePwmCfg, FirmwareSec)
@@ -1275,25 +1349,52 @@ def ShowStatus(stat):
   Opts = ['   [x] '+Opts[I] if stat[I] == 0x01 else '   [ ] '+Opts[I] for I in range(len(stat))]
   for Opt in Opts: print(Opt)
 
+
 def InstallScript(do_samba, do_paths, do_hwfeat):
-  print('Installing NAS script...\n')
+  print('Installing NAS script:')
   if do_samba: 
+
+    print(' - Setting up Samba service... ', end='', flush=True)
     ErrMsg = SetupSambaNas()
-    if ErrMsg != '': print(ErrMsg+'\n')
+    if ErrMsg == '': print(GREEN+'Done.'+RESET) 
+    else: print(RED+'Failed !\n'+YELLOW+'   '+ErrMsg)
+    time.sleep(0.6)
+
   if do_paths:
-    if not os.path.exists(CrontabCfgFile): open(CrontabCfgFile, 'a').close()
-    ErrMsg = ChangeFileLines(CrontabCfgFile, CrontabCfg, CrontabDel)
-    if ErrMsg != '': print('Cannot configure script to run at boot:\n'+ErrMsg+'\n')
+
+    print(' - Installing NAS service... ', end='', flush=True)
+    ErrMsg = SetupNasService()
+    if ErrMsg == '': print(GREEN+'Done.'+RESET) 
+    else: print(RED+'Failed !\n'+YELLOW+'   '+ErrMsg)
+    time.sleep(0.6)
+
+    print(' - Hooking up Reboot service... ', end='', flush=True)
     ErrMsg = ExtendService('reboot', RebootCfg)
-    if ErrMsg != '': print('Cannot configure script to run at restart:\n'+ErrMsg+'\n')
+    if ErrMsg == '': print(GREEN+'Done.'+RESET) 
+    else: print(RED+'Failed !\n'+YELLOW+'   '+ErrMsg)
+    time.sleep(0.6)
+
+    print(' - Hooking up PowerOff service... ', end='', flush=True)
     ErrMsg = ExtendService('poweroff', PwrOffCfg)
-    if ErrMsg != '': print('Cannot configure script to run at shutdown:\n'+ErrMsg+'\n')
+    if ErrMsg == '': print(GREEN+'Done.'+RESET) 
+    else: print(RED+'Failed !\n'+YELLOW+'   '+ErrMsg)
+    time.sleep(0.6)
+
   if do_hwfeat:
+
+    print(' - Setting up PWM and AKT LED... ', end='', flush=True)
     ErrMsg = ChangeFileLines(FirmwareFile, FirmwareCfg, FirmwareDel, FirmwareSec)
-    if ErrMsg != '': print('Cannot edit firmware config file:\n'+ErrMsg+'\n')
+    if ErrMsg == '': print(GREEN+'Done.'+RESET) 
+    else: print(RED+'Failed !\n'+YELLOW+'   '+ErrMsg)
+    time.sleep(0.6)
+
+    print(' - Enabling I2C hardware... ', end='', flush=True)
     ErrMsg = SetI2CState(True)
-    if ErrMsg != '': print('Cannot enable I2C feature:\n'+ErrMsg+'\n')
-    time.sleep(1)
+    if ErrMsg == '': print(GREEN+'Done.'+RESET) 
+    else: print(RED+'Failed !\n'+YELLOW+'   '+ErrMsg)
+    time.sleep(0.6)
+
+  print('')
   Stat = GetInstStatus()
   if all(value == 0x01 for value in Stat):
     print(CYAN+'Status: '+GREEN+'The script was successfully installed.'+RESET)
@@ -1304,24 +1405,52 @@ def InstallScript(do_samba, do_paths, do_hwfeat):
   print('')
   ShowStatus(Stat)
 
+
 def UninstallScript(do_samba, do_paths, do_hwfeat):
-  print('Uninstalling NAS script...\n')
+  print('Uninstalling NAS script:')
   if do_samba:
+
+    print(' - Removing Samba config... ', end='', flush=True)
     ErrMsg = RemoveSambaNas()
-    if ErrMsg != '': print(ErrMsg+'\n')
-  if do_paths:  
-    ErrMsg = ChangeFileLines(CrontabCfgFile, [], CrontabDel)
-    if ErrMsg != '': print('Cannot remove "run at boot" configuration:\n'+ErrMsg+'\n')
+    if ErrMsg == '': print(GREEN+'Done.'+RESET) 
+    else: print(RED+'Failed !\n'+YELLOW+'   '+ErrMsg)
+    time.sleep(0.6)
+
+  if do_paths:
+
+    print(' - Removing NAS service... ', end='', flush=True)
+    ErrMsg = RemoveNasService()
+    if ErrMsg == '': print(GREEN+'Done.'+RESET) 
+    else: print(RED+'Failed !\n'+YELLOW+'   '+ErrMsg)
+    time.sleep(0.6)
+
+    print(' - Releasing Reboot service hook... ', end='', flush=True)
     ErrMsg = RemoveExtension('reboot')
-    if ErrMsg != '': print('Cannot remove "run at restart" configuration:\n'+ErrMsg+'\n')
+    if ErrMsg == '': print(GREEN+'Done.'+RESET) 
+    else: print(RED+'Failed !\n'+YELLOW+'   '+ErrMsg)
+    time.sleep(0.6)
+
+    print(' - Releasing PowerOff service hook... ', end='', flush=True)
     ErrMsg = RemoveExtension('poweroff')
-    if ErrMsg != '': print('Cannot remove "run at shutdown" configuration:\n'+ErrMsg+'\n')
+    if ErrMsg == '': print(GREEN+'Done.'+RESET) 
+    else: print(RED+'Failed !\n'+YELLOW+'   '+ErrMsg)
+    time.sleep(0.6)
+
   if do_hwfeat:  
+
+    print(' - Releasing PWM and AKT LED... ', end='', flush=True)
     ErrMsg = ChangeFileLines(FirmwareFile, [], FirmwareDel, FirmwareSec)
-    if ErrMsg != '': print('Cannot remove firmware configuration:\n'+ErrMsg+'\n')
+    if ErrMsg == '': print(GREEN+'Done.'+RESET) 
+    else: print(RED+'Failed !\n'+YELLOW+'   '+ErrMsg)
+    time.sleep(0.6)
+
+    print(' - Releasing I2C hardware... ', end='', flush=True)
     ErrMsg = SetI2CState(False)
-    if ErrMsg != '': print('Cannot disable I2C feature:\n'+ErrMsg+'\n')
-    time.sleep(1)
+    if ErrMsg == '': print(GREEN+'Done.'+RESET) 
+    else: print(RED+'Failed !\n'+YELLOW+'   '+ErrMsg)
+    time.sleep(0.6)
+
+  print('')
   Stat = GetInstStatus()
   if all(value == 0x00 for value in Stat):
     print(CYAN+'Status: '+GREEN+'The script was successfully uninstalled.'+RESET)
@@ -3293,16 +3422,16 @@ async def StartInitTask():
   global TCPSrv, EventsEnabled, DevMon
   TaskEnter('Start Init')
   try:
-    adpDone = False; botDone = False
+    adpDone = True; botDone = True  # adpDone = False; botDone = False
     count = (8 * 60) // 2
     CompAddr = ValidCompAddr()
     conDone = CompAddr == None
     if Debug: print(f'Comp Server addr: {CompAddr}')
 
     for i in range(count):
-      if not adpDone: adpDone = len(GetAdapterList()) > 0
+      #if not adpDone: adpDone = len(GetAdapterList()) > 0
       if not conDone: conDone = Connectable(CompAddr)
-      if not botDone: botDone = BootDone()
+      #if not botDone: botDone = BootDone()
       if Debug: print(f'CON={conDone}  ADP={adpDone}  BOOT={botDone}')
       if botDone and ((REG_Shutdown == stShdLow) or (REG_Shutdown == stShdNow)):
         MainExit(exShutdownUPS); return
@@ -3590,9 +3719,12 @@ TermFile = RunPath+'/term.bin'
 AMPFile  = RunPath+'/pool_andro.bin'
 SafeShdFile = '/var/safe_shd'  # a flag file to detect power failures
 
-CrontabCfg = [CrontabCfg[0].replace('%RunPath%', RunPath)]
 RebootCfg  = [RebootCfg[0].replace('%RunPath%', RunPath)]
 PwrOffCfg  = [PwrOffCfg[0].replace('%RunPath%', RunPath)]
+for _section in ServiceCfg:
+  for _idx, _item in enumerate(_section):
+    if isinstance(_item, str):
+      _section[_idx] = _item.replace('%RunPath%', RunPath)
 
 LogD(5, 'Paths inited')
 
@@ -3713,7 +3845,7 @@ for param in ParamList:
 # Allow only one instace...
 
 if AlreadyRunning():
-  if Debug: print('Script is already running...\nUse "sudo htop" and F9 on the main thread to stop it.')
+  if Debug: print('Script is already running...\nUse "sudo systemctl stop nas_script.service" to stop it.')
   sys.exit(1)
 LogD(9, 'One instance allowed')  
 
@@ -3936,5 +4068,20 @@ elif ExitCmd == exShutdownUPS:
 elif ExitCmd == exShutdownALL:
   ALLMarkSD()
   os.system('sudo poweroff -p')
+
+
+# --------------------- TO DO: ---------------------------------
+#
+#  Bugs:
+#   - redesign the Power Button code
+#
+#  Improvements:
+#   - make the I2C slave to run on interrupts instead of pulling
+#   - maybe implementing a CRC check on every I2C communication ?
+#
+#  New features:
+#   - make use of the "smartd" smartmontools monitoring service
+#
+# --------------------------------------------------------------
 
 
