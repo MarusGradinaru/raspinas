@@ -851,15 +851,6 @@ class HardwarePWM:
 
 #----- System functions -------------------------
 
-def BootDone():
-  res = False
-  try:
-    result = subprocess.run(['systemctl', 'is-active', 'multi-user.target'], capture_output=True, text=True)
-    res = result.stdout.strip() == 'active'
-  except Exception as E:
-    if Debug: print(f'BootDone Exception: {E}')
-  return res
-
 def AlreadyRunning():
   current_pid = os.getpid()
   script_name = os.path.basename(__file__)
@@ -3422,20 +3413,19 @@ async def StartInitTask():
   global TCPSrv, EventsEnabled, DevMon
   TaskEnter('Start Init')
   try:
-    adpDone = True; botDone = True  # adpDone = False; botDone = False
+    adpDone = False
     count = (8 * 60) // 2
     CompAddr = ValidCompAddr()
     conDone = CompAddr == None
     if Debug: print(f'Comp Server addr: {CompAddr}')
 
     for i in range(count):
-      #if not adpDone: adpDone = len(GetAdapterList()) > 0
+      if not adpDone: adpDone = len(GetAdapterList()) > 0
       if not conDone: conDone = Connectable(CompAddr)
-      #if not botDone: botDone = BootDone()
-      if Debug: print(f'CON={conDone}  ADP={adpDone}  BOOT={botDone}')
-      if botDone and ((REG_Shutdown == stShdLow) or (REG_Shutdown == stShdNow)):
+      if Debug: print(f'CON={conDone}  ADP={adpDone}')
+      if (REG_Shutdown == stShdLow) or (REG_Shutdown == stShdNow):
         MainExit(exShutdownUPS); return
-      if (Debug or conDone) and adpDone and botDone: break
+      if (Debug or conDone) and adpDone: break
       await asyncio.sleep(2)
       if AsyncTerminated: return
 
@@ -3459,8 +3449,9 @@ async def StartInitTask():
     EventsEnabled = True
     DevMon = BlockDevMonitor(OnDevUpdate)
     SendRaspiReady()
-    loop = asyncio.get_running_loop()
-    loop.call_later(3, ShowAllThreads)
+    if Debug:
+      loop = asyncio.get_running_loop()
+      loop.call_later(3, ShowAllThreads)
 
     TaskList.append(asyncio.create_task(DevicesTask()))
   except asyncio.CancelledError: pass
@@ -4080,6 +4071,7 @@ elif ExitCmd == exShutdownALL:
 #   - maybe implementing a CRC check on every I2C communication ?
 #
 #  New features:
+#   - implement a security protocol so that it can be safely accessed from the internet
 #   - make use of the "smartd" smartmontools monitoring service
 #
 # --------------------------------------------------------------
