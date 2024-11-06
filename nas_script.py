@@ -4,7 +4,7 @@
 #                                                       #
 #   Created by: Marus Alexander (Romania/Europe)        #
 #   Contact and bug report: marus.gradinaru@gmail.com   #
-#   Website link: http://marus-gradinaru.42web.io       #
+#   Website link: https://marus-gradinaru.42web.io      #
 #   Donation link: https://revolut.me/marusgradinaru    #
 #                                                       #
 #-------------------------------------------------------#
